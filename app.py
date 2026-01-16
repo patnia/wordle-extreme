@@ -7,9 +7,9 @@ import random
 # Word loading
 # ---------------------------
 
-WORDS_DIR = Path("words")
-SOLUTIONS_FILE = WORDS_DIR / "solutions.txt"
-ALLOWED_FILE = WORDS_DIR / "allowed.txt"
+# WORDS_DIR = Path("words")
+SOLUTIONS_FILE = Path("solutions.txt")
+ALLOWED_FILE = Path("allowed.txt")
 
 @st.cache_data
 def load_words():
