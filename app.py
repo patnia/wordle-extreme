@@ -187,10 +187,10 @@ if st.button("Submit guess"):
         apply_guess(guess_input)
 '''
 def handle_guess_change():
-    guess = st.session_state.current_guess
+    guess = st.session_state.get("current_guess", "")
     if guess:
         apply_guess(guess)
-        st.session_state.current_guess = ""
+        st.session_state["current_guess"] = ""
 
 st.text_input("Enter a 5-letter guess", max_chars=WORD_LENGTH, key="current_guess", on_change=handle_guess_change)
 
