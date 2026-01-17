@@ -284,8 +284,10 @@ elif n_boards == 4:
     for row in rows:
         for col in row:
             with col:
-                st.markdown(f"**Board {idx+1}**")
-                render_board(idx)
+                with st.container():
+                    st.markdown(f"---\n**Board {idx+1}**")
+                    render_board(idx)
+                st.write("")  # small vertical spacer
                 idx += 1
 elif n_boards == 8:
     st.subheader("Octo")
@@ -294,8 +296,10 @@ elif n_boards == 8:
     for row in rows:
         for col in row:
             with col:
-                st.markdown(f"**Board {idx+1}**")
-                render_board(idx)
+                with st.container():
+                    st.markdown(f"---\n**Board {idx+1}**")
+                    render_board(idx)
+                st.write("")  # small vertical spacer
                 idx += 1
 
 remaining = st.session_state.max_guesses - len(st.session_state.guesses)
