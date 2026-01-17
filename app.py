@@ -7,17 +7,9 @@ import random
 # Word loading
 # ---------------------------
 
-<<<<<<< HEAD
 #WORDS_DIR = Path("words")
 SOLUTIONS_FILE = Path("solutions.txt")
 ALLOWED_FILE = Path("words.txt")
-=======
-
-#WORDS_DIR = Path("words")
-SOLUTIONS_FILE = Path("solutions.txt")
-ALLOWED_FILE = Path("words.txt")
-
->>>>>>> 9f98f74 (Submit guesses on Enter and remove button)
 
 @st.cache_data
 def load_words():
