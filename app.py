@@ -7,15 +7,9 @@ import random
 # Word loading
 # ---------------------------
 
-<<<<<<< HEAD
-# WORDS_DIR = Path("words")
-SOLUTIONS_FILE = Path("solutions.txt")
-ALLOWED_FILE = Path("allowed.txt")
-=======
 #WORDS_DIR = Path("words")
 SOLUTIONS_FILE = Path("solutions.txt")
 ALLOWED_FILE = Path("words.txt")
->>>>>>> 7cb48be (Use NLTK-derived solutions and words lists)
 
 @st.cache_data
 def load_words():
