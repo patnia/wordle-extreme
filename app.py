@@ -7,9 +7,17 @@ import random
 # Word loading
 # ---------------------------
 
+<<<<<<< HEAD
 #WORDS_DIR = Path("words")
 SOLUTIONS_FILE = Path("solutions.txt")
 ALLOWED_FILE = Path("words.txt")
+=======
+
+#WORDS_DIR = Path("words")
+SOLUTIONS_FILE = Path("solutions.txt")
+ALLOWED_FILE = Path("words.txt")
+
+>>>>>>> 9f98f74 (Submit guesses on Enter and remove button)
 
 @st.cache_data
 def load_words():
@@ -180,10 +188,19 @@ render_board()
 remaining = MAX_GUESSES - len(st.session_state.guesses)
 st.markdown(f"**Guesses left:** {remaining}")
 
+'''
 guess_input = st.text_input("Enter a 5-letter guess", max_chars=WORD_LENGTH)
 if st.button("Submit guess"):
     if guess_input:
         apply_guess(guess_input)
+'''
+def handle_guess_change():
+    guess = st.session_state.current_guess
+    if guess:
+        apply_guess(guess)
+        st.session_state.current_guess = ""
+
+st.text_input("Enter a 5-letter guess", max_chars=WORD_LENGTH, key="current_guess", on_change=handle_guess_change)
 
 if st.session_state.message:
     st.markdown(st.session_state.message)
