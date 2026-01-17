@@ -3,73 +3,6 @@ from datetime import date
 from pathlib import Path
 import random
 import requests
-import pandas as pd
-
-USERS_FILE = Path("users.csv")
-
-def load_users():
-    if not USERS_FILE.exists():
-        df = pd.DataFrame(columns=["username", "password"])
-        df.to_csv(USERS_FILE, index=False)
-        return df
-    return pd.read_csv(USERS_FILE, dtype=str)
-
-def save_users(df):
-    df.to_csv(USERS_FILE, index=False)
-
-def register_view():
-    st.subheader("Create account")
-    df = load_users()
-
-    new_user = st.text_input("New username")
-    new_pass = st.text_input("New password", type="password")
-
-    if st.button("Sign up"):
-        if not new_user or not new_pass:
-            st.error("Username and password are required.")
-            return
-
-        if (df["username"] == new_user).any():
-            st.error("Username already taken. Please choose another.")
-            return
-
-        df = pd.concat(
-            [df, pd.DataFrame([{"username": new_user, "password": new_pass}])],
-            ignore_index=True,
-        )
-        save_users(df)
-        st.success("Account created. You can log in now.")
-
-def login_view():
-    st.title("Wordle Extreme")
-    tab_login, tab_register = st.tabs(["Log in", "Sign up"])
-
-    with tab_login:
-        df = load_users()
-        username = st.text_input("Username", key="login_user")
-        password = st.text_input("Password", type="password", key="login_pass")
-
-        if st.button("Log in"):
-            if df.empty:
-                st.error("No users exist yet. Please sign up first.")
-            else:
-                row = df[(df["username"] == username) & (df["password"] == password)]
-                if not row.empty:
-                    st.session_state.user = username
-                    st.session_state.logged_in = True
-                    st.rerun()
-                else:
-                    st.error("Invalid username or password.")
-
-    with tab_register:
-        register_view()
-
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-
-if not st.session_state.logged_in:
-    login_view()
-    st.stop()
 
 # ---------------------------
 # Word loading
@@ -149,50 +82,83 @@ def score_guess(target: str, guess: str):
 
     return result
 
-def get_daily_target(today: date, solutions):
-    seed = today.toordinal()
-    idx = seed % len(solutions)
-    return solutions[idx]
+# ---------------------------
+# Modes and targets
+# ---------------------------
 
-def get_random_target(solutions):
-    return random.choice(solutions)
+MODE_CONFIG = {
+    "Classic": {"key": "classic", "boards": 1, "max_guesses": 6},
+    "Quad":    {"key": "quad",    "boards": 4, "max_guesses": 9},
+    "Octo":    {"key": "octo",    "boards": 8, "max_guesses": 13},
+}
+
+def get_daily_targets(mode_key: str, today: date, solutions):
+    boards = MODE_CONFIG[mode_key_title(mode_key)]["boards"]
+
+    # deterministic but simple: seed with mode+date and sample
+    seed = hash((mode_key, today.toordinal()))
+    rng = random.Random(seed)
+    idxs = rng.sample(range(len(solutions)), boards)
+    return [solutions[i] for i in idxs]
+
+def get_random_targets(mode_key: str, solutions):
+    boards = MODE_CONFIG[mode_key_title(mode_key)]["boards"]
+    rng = random.Random()
+    return rng.sample(solutions, boards)
+
+def mode_key_title(mode_key: str) -> str:
+    # helper to go from "classic" to "Classic" etc.
+    for label, cfg in MODE_CONFIG.items():
+        if cfg["key"] == mode_key:
+            return label
+    return "Classic"
 
 # ---------------------------
 # Streamlit app
 # ---------------------------
 
 st.set_page_config(
-    page_title="Classic Wordle Extreme",
+    page_title="Wordle Extreme",
     page_icon="🧩",
-    layout="centered"
+    layout="centered",
 )
 
-MAX_GUESSES = 6
-WORD_LENGTH = 5
+WORD_LENGTH = 5  # fixed 5-letter words
 
-def init_game(play_type: str):
+
+def init_game(mode_label: str, play_type: str):
+    cfg = MODE_CONFIG[mode_label]
+    mode_key = cfg["key"]
+    n_boards = cfg["boards"]
+
     if play_type == "Daily":
-        target = get_daily_target(date.today(), SOLUTIONS)
+        targets = get_daily_targets(mode_key, date.today(), SOLUTIONS)
     else:
-        target = get_random_target(SOLUTIONS)
+        targets = get_random_targets(mode_key, SOLUTIONS)
 
-    st.session_state.target = target
+    st.session_state.mode_label = mode_label
+    st.session_state.mode_key = mode_key
     st.session_state.play_type = play_type
-    st.session_state.guesses = []
-    st.session_state.evaluations = []
+    st.session_state.targets = targets                # list[str]
+    st.session_state.max_guesses = cfg["max_guesses"]
+    st.session_state.guesses = []                     # shared list of guesses
+    st.session_state.evaluations = {i: [] for i in range(n_boards)}
+    st.session_state.solved = set()
     st.session_state.game_over = False
     st.session_state.win = False
     st.session_state.message = ""
     st.session_state.answer_definition = ""
     st.session_state.guess_buffer = ""
 
+
 def ensure_initialized():
-    if "target" not in st.session_state:
-        init_game("Daily")
+    if "mode_label" not in st.session_state:
+        init_game("Classic", "Daily")
     if "answer_definition" not in st.session_state:
         st.session_state.answer_definition = ""
     if "guess_buffer" not in st.session_state:
         st.session_state.guess_buffer = ""
+
 
 COLOR_MAP = {
     "correct": "#6aaa64",
@@ -211,12 +177,14 @@ def render_cell(letter, status):
         unsafe_allow_html=True,
     )
 
-def render_board():
-    total_rows = MAX_GUESSES
+def render_board(board_index: int):
+    evals = st.session_state.evaluations[board_index]
+    total_rows = st.session_state.max_guesses
+
     for row_idx in range(total_rows):
-        if row_idx < len(st.session_state.guesses):
+        if row_idx < len(evals):
             guess = st.session_state.guesses[row_idx]
-            statuses = st.session_state.evaluations[row_idx]
+            statuses = evals[row_idx]
         else:
             guess = " " * WORD_LENGTH
             statuses = ["absent"] * WORD_LENGTH
@@ -227,6 +195,7 @@ def render_board():
                 letter = guess[j] if j < len(guess) else " "
                 status = statuses[j]
                 render_cell(letter, status)
+
 
 def apply_guess(guess: str):
     if st.session_state.game_over:
@@ -243,27 +212,42 @@ def apply_guess(guess: str):
         return
 
     st.session_state.guesses.append(guess)
-    eval_row = score_guess(st.session_state.target, guess)
-    st.session_state.evaluations.append(eval_row)
 
-    if all(x == "correct" for x in eval_row):
+    # evaluate across all boards
+    for i, target in enumerate(st.session_state.targets):
+        evals_i = st.session_state.evaluations[i]
+
+        if i in st.session_state.solved:
+            # board already solved; keep row alignment
+            evals_i.append(["correct"] * WORD_LENGTH)
+            continue
+
+        eval_row = score_guess(target, guess)
+        evals_i.append(eval_row)
+
+        if all(x == "correct" for x in eval_row):
+            st.session_state.solved.add(i)
+
+    # game over logic
+    if len(st.session_state.solved) == len(st.session_state.targets):
         st.session_state.game_over = True
         st.session_state.win = True
-        st.session_state.message = "You solved it! 🎉"
-    elif len(st.session_state.guesses) >= MAX_GUESSES:
+        st.session_state.message = "You solved all boards! 🎉"
+    elif len(st.session_state.guesses) >= st.session_state.max_guesses:
         st.session_state.game_over = True
         st.session_state.win = False
-        st.session_state.message = f"Out of guesses. Answer: {st.session_state.target}"
+        answers = ", ".join(st.session_state.targets)
+        st.session_state.message = f"Out of guesses. Answers: {answers}"
 
     if st.session_state.game_over:
-        st.session_state.answer_definition = get_definition(st.session_state.target)
+        # definition for first board's answer
+        st.session_state.answer_definition = get_definition(st.session_state.targets[0])
 
 # ---------------------------
 # Enter-to-submit handler
 # ---------------------------
 
 def handle_guess_change():
-    # Called when user presses Enter in the text input
     guess = st.session_state.get("guess_buffer", "")
     if guess:
         apply_guess(guess)
@@ -275,24 +259,46 @@ def handle_guess_change():
 
 ensure_initialized()
 
-st.title("Classic Wordle Extreme")
-st.caption(f"{st.session_state.play_type} · {date.today().isoformat()}")
+st.title("Wordle Extreme")
 
-col_left, col_right = st.columns(2)
-with col_left:
-    play_type = st.radio(
-        "Play type",
-        ["Daily", "Practice"],
-        index=0 if st.session_state.play_type == "Daily" else 1,
-    )
-with col_right:
-    if st.button("New game"):
-        init_game(play_type)
+# Sidebar controls for mode and play type
+mode_label = st.sidebar.selectbox("Mode", list(MODE_CONFIG.keys()))
+play_type = st.sidebar.radio("Play type", ["Daily", "Practice"])
 
-st.markdown("### Board")
-render_board()
+if st.sidebar.button("New game"):
+    init_game(mode_label, play_type)
 
-remaining = MAX_GUESSES - len(st.session_state.guesses)
+st.caption(
+    f"{st.session_state.mode_label} · {st.session_state.play_type} · {date.today().isoformat()}"
+)
+
+n_boards = len(st.session_state.targets)
+
+if n_boards == 1:
+    st.subheader("Classic")
+    render_board(0)
+elif n_boards == 4:
+    st.subheader("Quad")
+    rows = [st.columns(2), st.columns(2)]
+    idx = 0
+    for row in rows:
+        for col in row:
+            with col:
+                st.markdown(f"**Board {idx+1}**")
+                render_board(idx)
+                idx += 1
+elif n_boards == 8:
+    st.subheader("Octo")
+    rows = [st.columns(4), st.columns(4)]
+    idx = 0
+    for row in rows:
+        for col in row:
+            with col:
+                st.markdown(f"**Board {idx+1}**")
+                render_board(idx)
+                idx += 1
+
+remaining = st.session_state.max_guesses - len(st.session_state.guesses)
 st.markdown(f"**Guesses left:** {remaining}")
 
 st.text_input(
@@ -308,5 +314,5 @@ if st.session_state.message:
 if st.session_state.game_over and st.session_state.answer_definition:
     st.markdown("### Today’s word")
     st.markdown(
-        f"**{st.session_state.target.title()}** – {st.session_state.answer_definition}"
+        f"**{st.session_state.targets[0].title()}** – {st.session_state.answer_definition}"
     )
