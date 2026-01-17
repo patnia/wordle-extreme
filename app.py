@@ -3,6 +3,73 @@ from datetime import date
 from pathlib import Path
 import random
 import requests
+import pandas as pd
+
+USERS_FILE = Path("users.csv")
+
+def load_users():
+    if not USERS_FILE.exists():
+        df = pd.DataFrame(columns=["username", "password"])
+        df.to_csv(USERS_FILE, index=False)
+        return df
+    return pd.read_csv(USERS_FILE, dtype=str)
+
+def save_users(df):
+    df.to_csv(USERS_FILE, index=False)
+
+def register_view():
+    st.subheader("Create account")
+    df = load_users()
+
+    new_user = st.text_input("New username")
+    new_pass = st.text_input("New password", type="password")
+
+    if st.button("Sign up"):
+        if not new_user or not new_pass:
+            st.error("Username and password are required.")
+            return
+
+        if (df["username"] == new_user).any():
+            st.error("Username already taken. Please choose another.")
+            return
+
+        df = pd.concat(
+            [df, pd.DataFrame([{"username": new_user, "password": new_pass}])],
+            ignore_index=True,
+        )
+        save_users(df)
+        st.success("Account created. You can log in now.")
+
+def login_view():
+    st.title("Wordle Extreme")
+    tab_login, tab_register = st.tabs(["Log in", "Sign up"])
+
+    with tab_login:
+        df = load_users()
+        username = st.text_input("Username", key="login_user")
+        password = st.text_input("Password", type="password", key="login_pass")
+
+        if st.button("Log in"):
+            if df.empty:
+                st.error("No users exist yet. Please sign up first.")
+            else:
+                row = df[(df["username"] == username) & (df["password"] == password)]
+                if not row.empty:
+                    st.session_state.user = username
+                    st.session_state.logged_in = True
+                    st.experimental_rerun()
+                else:
+                    st.error("Invalid username or password.")
+
+    with tab_register:
+        register_view()
+
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+
+if not st.session_state.logged_in:
+    login_view()
+    st.stop()
 
 # ---------------------------
 # Word loading
