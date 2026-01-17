@@ -186,13 +186,16 @@ if st.button("Submit guess"):
     if guess_input:
         apply_guess(guess_input)
 '''
+if "guess_buffer" not in st.session_state:
+    st.session_state["guess_buffer"] = ""
+    
 def handle_guess_change():
-    guess = st.session_state.get("current_guess", "")
+    guess = st.session_state.get("guess_buffer", "")
     if guess:
         apply_guess(guess)
-        st.session_state["current_guess"] = ""
-
-st.text_input("Enter a 5-letter guess", max_chars=WORD_LENGTH, key="current_guess", on_change=handle_guess_change)
+        st.session_state["guess_buffer"] = "" 
+        
+st.text_input("Enter a 5-letter guess", max_chars=WORD_LENGTH, key="guess_buffer", on_change=handle_guess_change)
 
 if st.session_state.message:
     st.markdown(st.session_state.message)
