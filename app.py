@@ -7,19 +7,28 @@ import random
 # Word loading
 # ---------------------------
 
+<<<<<<< HEAD
 # WORDS_DIR = Path("words")
 SOLUTIONS_FILE = Path("solutions.txt")
 ALLOWED_FILE = Path("allowed.txt")
+=======
+#WORDS_DIR = Path("words")
+SOLUTIONS_FILE = Path("solutions.txt")
+ALLOWED_FILE = Path("words.txt")
+>>>>>>> 7cb48be (Use NLTK-derived solutions and words lists)
 
 @st.cache_data
 def load_words():
     with open(SOLUTIONS_FILE) as f:
         solutions = [w.strip().upper() for w in f if w.strip()]
-    if ALLOWED_FILE.exists():
-        with open(ALLOWED_FILE) as f:
-            allowed = [w.strip().upper() for w in f if w.strip()]
-    else:
-        allowed = solutions
+    
+    with open(ALLOWED_FILE) as f:
+        allowed = [w.strip().upper() for w in f if w.strip()]
+
+    allowed_set = set(allowed)
+    missing = [w for w in solutions if w not in allowed_set]
+    allowed.extend(missing)
+    
     return solutions, allowed
 
 SOLUTIONS, ALLOWED = load_words()
