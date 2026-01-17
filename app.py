@@ -168,8 +168,8 @@ def apply_guess(guess: str):
         st.session_state.message = f"Out of guesses. Answer: {st.session_state.target}"
     
     if st.session_state.game_over:
-    definition = get_wordnet_definition(st.session_state.target)
-    st.session_state.answer_definition = definition
+        definition = get_wordnet_definition(st.session_state.target)
+        st.session_state.answer_definition = definition
 
 if st.session_state.game_over and st.session_state.get("answer_definition"):
     st.markdown("### Today’s word")
