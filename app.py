@@ -57,7 +57,7 @@ def login_view():
                 if not row.empty:
                     st.session_state.user = username
                     st.session_state.logged_in = True
-                    st.experimental_rerun()
+                    st.rerun()
                 else:
                     st.error("Invalid username or password.")
 
