@@ -276,31 +276,51 @@ n_boards = len(st.session_state.targets)
 
 if n_boards == 1:
     st.subheader("Classic")
-    render_board(0)
+    with st.container():
+        render_board(0)
+
 elif n_boards == 4:
     st.subheader("Quad")
-    rows = [st.columns(2), st.columns(2)]
+    rows = [st.columns([1, 0.1, 1]), st.columns([1, 0.1, 1])]  # spacer column
     idx = 0
     for row in rows:
-        for col in row:
+        left, spacer, right = row
+        for col in (left, right):
+            if idx >= n_boards:
+                break
             with col:
-                with st.container():
-                    st.markdown(f"---\n**Board {idx+1}**")
-                    render_board(idx)
-                st.write("")  # small vertical spacer
-                idx += 1
+                st.markdown(
+                    "<div style='border: 2px solid #444; border-radius: 8px; padding: 8px; margin: 8px;'>",
+                    unsafe_allow_html=True,
+                )
+                st.markdown(f"**Board {idx+1}**")
+                render_board(idx)
+                st.markdown("</div>", unsafe_allow_html=True)
+            idx += 1
+
 elif n_boards == 8:
     st.subheader("Octo")
-    rows = [st.columns(4), st.columns(4)]
+    # 4 boards per row with spacer columns
+    rows = [st.columns([1, 0.1, 1, 0.1, 1, 0.1, 1]),
+            st.columns([1, 0.1, 1, 0.1, 1, 0.1, 1])]
     idx = 0
     for row in rows:
-        for col in row:
+        for col_pos, col in enumerate(row):
+            # skip spacer columns (odd indices)
+            if col_pos % 2 == 1:
+                continue
+            if idx >= n_boards:
+                break
             with col:
-                with st.container():
-                    st.markdown(f"---\n**Board {idx+1}**")
-                    render_board(idx)
-                st.write("")  # small vertical spacer
-                idx += 1
+                st.markdown(
+                    "<div style='border: 2px solid #444; border-radius: 8px; padding: 8px; margin: 8px;'>",
+                    unsafe_allow_html=True,
+                )
+                st.markdown(f"**Board {idx+1}**")
+                render_board(idx)
+                st.markdown("</div>", unsafe_allow_html=True)
+            idx += 1
+
 
 remaining = st.session_state.max_guesses - len(st.session_state.guesses)
 st.markdown(f"**Guesses left:** {remaining}")
