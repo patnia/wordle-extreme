@@ -2,6 +2,8 @@ import streamlit as st
 from datetime import date
 from pathlib import Path
 import random
+from nltk.corpus import wordnet as wn
+
 
 # ---------------------------
 # Word loading
@@ -66,6 +68,15 @@ def get_daily_target(today: date, solutions):
 def get_random_target(solutions):
     return random.choice(solutions)
 
+def get_wordnet_definition(word: str) -> str:
+    """Return a short definition for the word using NLTK WordNet."""
+    synsets = wn.synsets(word.lower())
+    if not synsets:
+        return "No definition available."
+    # Take the first sense
+    definition = synsets[0].definition()
+    return definition.capitalize()
+
 # ---------------------------
 # Streamlit app
 # ---------------------------
@@ -92,6 +103,8 @@ def init_game(play_type: str):
 def ensure_initialized():
     if "target" not in st.session_state:
         init_game("Daily")
+    if "answer_definition" not in st.session_state:
+        st.session_state.answer_definition = ""
 
 COLOR_MAP = {
     "correct": "#6aaa64",
@@ -153,6 +166,16 @@ def apply_guess(guess: str):
         st.session_state.game_over = True
         st.session_state.win = False
         st.session_state.message = f"Out of guesses. Answer: {st.session_state.target}"
+    
+    if st.session_state.game_over:
+    definition = get_wordnet_definition(st.session_state.target)
+    st.session_state.answer_definition = definition
+
+if st.session_state.game_over and st.session_state.get("answer_definition"):
+    st.markdown("### Today’s word")
+    st.markdown(
+        f"**{st.session_state.target.title()}** – {st.session_state.answer_definition}"
+    )
 
 # ---------------------------
 # UI
