@@ -271,7 +271,7 @@ def render_keyboard():
                 ]
                 st.markdown(
                     f"<div style='display:flex; flex-direction:column; align-items:center;'>"
-                    f"  <div style='font-weight:bold; color:white; margin-bottom:2px;'>{ch}</div>"
+                    f"  <div style='font-weight:bold; color:#111; font-size: 0.9rem; margin-bottom:2px;'>{ch}</div>"
                     f"  <div style='display:flex; width:2.4rem; height:0.6rem; "
                     f"       border:2px solid {overall_border}; border-radius:4px; overflow:hidden;'>"
                     f"    {segments_html}"
