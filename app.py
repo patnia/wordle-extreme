@@ -92,6 +92,13 @@ MODE_CONFIG = {
     "Octo":    {"key": "octo",    "boards": 8, "max_guesses": 13},
 }
 
+def mode_key_title(mode_key: str) -> str:
+    # helper to go from "classic" to "Classic" etc.
+    for label, cfg in MODE_CONFIG.items():
+        if cfg["key"] == mode_key:
+            return label
+    return "Classic"
+
 def get_daily_targets(mode_key: str, today: date, solutions):
     boards = MODE_CONFIG[mode_key_title(mode_key)]["boards"]
 
@@ -106,13 +113,6 @@ def get_random_targets(mode_key: str, solutions):
     rng = random.Random()
     return rng.sample(solutions, boards)
 
-def mode_key_title(mode_key: str) -> str:
-    # helper to go from "classic" to "Classic" etc.
-    for label, cfg in MODE_CONFIG.items():
-        if cfg["key"] == mode_key:
-            return label
-    return "Classic"
-
 # ---------------------------
 # Streamlit app
 # ---------------------------
@@ -124,6 +124,13 @@ st.set_page_config(
 )
 
 WORD_LENGTH = 5  # fixed 5-letter words
+
+# ---------------------------
+# Game state helpers
+# ---------------------------
+
+if "screen" not in st.session_state:
+    st.session_state.screen = "menu"  # "menu" or "game"
 
 
 def init_game(mode_label: str, play_type: str):
@@ -147,18 +154,17 @@ def init_game(mode_label: str, play_type: str):
     st.session_state.game_over = False
     st.session_state.win = False
     st.session_state.message = ""
-    st.session_state.answer_definition = ""
+    st.session_state.definitions = [""] * n_boards
     st.session_state.guess_buffer = ""
 
 
 def ensure_initialized():
-    if "mode_label" not in st.session_state:
+    if "mode_label" not in st.session_state or "targets" not in st.session_state:
         init_game("Classic", "Daily")
-    if "answer_definition" not in st.session_state:
-        st.session_state.answer_definition = ""
+    if "definitions" not in st.session_state:
+        st.session_state.definitions = [""] * len(st.session_state.targets)
     if "guess_buffer" not in st.session_state:
         st.session_state.guess_buffer = ""
-
 
 COLOR_MAP = {
     "correct": "#6aaa64",
@@ -196,6 +202,9 @@ def render_board(board_index: int):
                 status = statuses[j]
                 render_cell(letter, status)
 
+# ---------------------------
+# Guess handling
+# ---------------------------
 
 def apply_guess(guess: str):
     if st.session_state.game_over:
@@ -236,16 +245,22 @@ def apply_guess(guess: str):
     elif len(st.session_state.guesses) >= st.session_state.max_guesses:
         st.session_state.game_over = True
         st.session_state.win = False
-        answers = ", ".join(st.session_state.targets)
-        st.session_state.message = f"Out of guesses. Answers: {answers}"
+        # only show answers for unsolved boards
+        unrevealed = [
+            st.session_state.targets[i]
+            for i in range(len(st.session_state.targets))
+            if i not in st.session_state.solved
+        ]
+        if unrevealed:
+            answers = ", ".join(unrevealed)
+            st.session_state.message = f"Out of guesses. Unsolved answers: {answers}"
+        else:
+            st.session_state.message = "Out of guesses."
 
     if st.session_state.game_over:
-        # definition for first board's answer
-        st.session_state.answer_definition = get_definition(st.session_state.targets[0])
-
-# ---------------------------
-# Enter-to-submit handler
-# ---------------------------
+        # definitions for all boards
+        for i, word in enumerate(st.session_state.targets):
+            st.session_state.definitions[i] = get_definition(word)
 
 def handle_guess_change():
     guess = st.session_state.get("guess_buffer", "")
@@ -254,89 +269,113 @@ def handle_guess_change():
         st.session_state["guess_buffer"] = ""  # clear after submit
 
 # ---------------------------
-# UI
+# Screens
 # ---------------------------
 
-ensure_initialized()
+def show_menu():
+    st.title("Wordle Extreme")
+    st.markdown("Choose a game mode to begin.")
 
-st.title("Wordle Extreme")
+    mode_label = st.radio("Mode", list(MODE_CONFIG.keys()), index=0)
+    play_type = st.radio("Play type", ["Daily", "Practice"], index=0)
 
-# Sidebar controls for mode and play type
-mode_label = st.sidebar.selectbox("Mode", list(MODE_CONFIG.keys()))
-play_type = st.sidebar.radio("Play type", ["Daily", "Practice"])
+    if st.button("Start game"):
+        init_game(mode_label, play_type)
+        st.session_state.screen = "game"
+        st.experimental_rerun()
 
-if st.sidebar.button("New game"):
-    init_game(mode_label, play_type)
+def show_game():
+    ensure_initialized()
 
-st.caption(
-    f"{st.session_state.mode_label} · {st.session_state.play_type} · {date.today().isoformat()}"
-)
-
-n_boards = len(st.session_state.targets)
-
-if n_boards == 1:
-    st.subheader("Classic")
-    with st.container():
-        render_board(0)
-
-elif n_boards == 4:
-    st.subheader("Quad")
-    rows = [st.columns([1, 0.1, 1]), st.columns([1, 0.1, 1])]  # spacer column
-    idx = 0
-    for row in rows:
-        left, spacer, right = row
-        for col in (left, right):
-            if idx >= n_boards:
-                break
-            with col:
-                st.markdown(
-                    "<div style='border: 2px solid #444; border-radius: 8px; padding: 8px; margin: 8px;'>",
-                    unsafe_allow_html=True,
-                )
-                st.markdown(f"**Board {idx+1}**")
-                render_board(idx)
-                st.markdown("</div>", unsafe_allow_html=True)
-            idx += 1
-
-elif n_boards == 8:
-    st.subheader("Octo")
-    # 4 boards per row with spacer columns
-    rows = [st.columns([1, 0.1, 1, 0.1, 1, 0.1, 1]),
-            st.columns([1, 0.1, 1, 0.1, 1, 0.1, 1])]
-    idx = 0
-    for row in rows:
-        for col_pos, col in enumerate(row):
-            # skip spacer columns (odd indices)
-            if col_pos % 2 == 1:
-                continue
-            if idx >= n_boards:
-                break
-            with col:
-                st.markdown(
-                    "<div style='border: 2px solid #444; border-radius: 8px; padding: 8px; margin: 8px;'>",
-                    unsafe_allow_html=True,
-                )
-                st.markdown(f"**Board {idx+1}**")
-                render_board(idx)
-                st.markdown("</div>", unsafe_allow_html=True)
-            idx += 1
-
-
-remaining = st.session_state.max_guesses - len(st.session_state.guesses)
-st.markdown(f"**Guesses left:** {remaining}")
-
-st.text_input(
-    "Enter a 5-letter guess",
-    max_chars=WORD_LENGTH,
-    key="guess_buffer",
-    on_change=handle_guess_change,
-)
-
-if st.session_state.message:
-    st.markdown(st.session_state.message)
-
-if st.session_state.game_over and st.session_state.answer_definition:
-    st.markdown("### Today’s word")
-    st.markdown(
-        f"**{st.session_state.targets[0].title()}** – {st.session_state.answer_definition}"
+    st.title("Wordle Extreme")
+    st.caption(
+        f"{st.session_state.mode_label} · {st.session_state.play_type} · {date.today().isoformat()}"
     )
+
+    if st.button("Back to menu"):
+        st.session_state.screen = "menu"
+        st.experimental_rerun()
+
+    n_boards = len(st.session_state.targets)
+
+    if n_boards == 1:
+        st.subheader("Classic")
+        with st.container():
+            render_board(0)
+
+    elif n_boards == 4:
+        st.subheader("Quad")
+        rows = [st.columns([1, 0.1, 1]), st.columns([1, 0.1, 1])]  # spacer column
+        idx = 0
+        for row in rows:
+            left, spacer, right = row
+            for col in (left, right):
+                if idx >= n_boards:
+                    break
+                with col:
+                    st.markdown(
+                        "<div style='border: 2px solid #444; border-radius: 8px; "
+                        "padding: 8px; margin: 8px;'>",
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown(f"**Board {idx+1}**")
+                    render_board(idx)
+                    st.markdown("</div>", unsafe_allow_html=True)
+                idx += 1
+
+    elif n_boards == 8:
+        st.subheader("Octo")
+        # 4 rows, 2 boards per row
+        rows = [st.columns(2) for _ in range(4)]
+        idx = 0
+        for row in rows:
+            for col in row:
+                if idx >= n_boards:
+                    break
+                with col:
+                    st.markdown(
+                        "<div style='border: 2px solid #444; border-radius: 8px; "
+                        "padding: 8px; margin: 8px;'>",
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown(f"**Board {idx+1}**")
+                    render_board(idx)
+                    st.markdown("</div>", unsafe_allow_html=True)
+                idx += 1
+
+    remaining = st.session_state.max_guesses - len(st.session_state.guesses)
+    st.markdown(f"**Guesses left:** {remaining}")
+
+    st.text_input(
+        "Enter a 5-letter guess",
+        max_chars=WORD_LENGTH,
+        key="guess_buffer",
+        on_change=handle_guess_change,
+    )
+
+    if st.session_state.message:
+        st.markdown(st.session_state.message)
+
+    if st.session_state.game_over:
+        n_boards = len(st.session_state.targets)
+        if n_boards == 1:
+            st.markdown("### Today’s word")
+            st.markdown(
+                f"**{st.session_state.targets[0].title()}** – {st.session_state.definitions[0]}"
+            )
+        else:
+            st.markdown("### Today’s words")
+            for i in range(n_boards):
+                word = st.session_state.targets[i].title()
+                definition = st.session_state.definitions[i]
+                label = "(solved)" if i in st.session_state.solved else "(unsolved)"
+                st.markdown(f"**Board {i+1} {label}: {word}** – {definition}")
+
+# ---------------------------
+# Router
+# ---------------------------
+
+if st.session_state.screen == "menu":
+    show_menu()
+else:
+    show_game()
