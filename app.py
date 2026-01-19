@@ -282,7 +282,7 @@ def show_menu():
     if st.button("Start game"):
         init_game(mode_label, play_type)
         st.session_state.screen = "game"
-        st.experimental_rerun()
+        st.rerun()
 
 def show_game():
     ensure_initialized()
@@ -294,7 +294,7 @@ def show_game():
 
     if st.button("Back to menu"):
         st.session_state.screen = "menu"
-        st.experimental_rerun()
+        st.rerun()
 
     n_boards = len(st.session_state.targets)
 
