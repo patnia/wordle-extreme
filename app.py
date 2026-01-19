@@ -126,6 +126,47 @@ st.set_page_config(
 WORD_LENGTH = 5  # fixed 5-letter words
 
 # ---------------------------
+# Keyboard configuration
+# ---------------------------
+
+KEYBOARD_ROWS = ["QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"]
+
+KEY_COLOR_PRIORITY = {
+    "correct": 3,
+    "present": 2,
+    "absent": 1,
+    "unused": 0,
+}
+KEYBOARD_COLORS = {
+    "correct": "#6aaa64",  # green
+    "present": "#c9b458",  # yellow
+    "absent": "#3a3a3c",   # black-ish
+    "unused": "#818384",   # grey
+}
+
+def init_keyboard_states(n_boards: int):
+    st.session_state.keyboard_state = {
+        ch: "unused" for ch in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    }
+    st.session_state.keyboard_board_state = {
+        ch: ["unused"] * n_boards for ch in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    }
+
+def update_keyboard_state_for_board(board_idx: int, guess: str, eval_row):
+    for ch, status in zip(guess, eval_row):
+        board_list = st.session_state.keyboard_board_state[ch]
+        prev_board = board_list[board_idx]
+        if KEY_COLOR_PRIORITY[status] > KEY_COLOR_PRIORITY[prev_board]:
+            board_list[board_idx] = status
+
+        # overall key status = best across boards
+        best = "unused"
+        for s in board_list:
+            if KEY_COLOR_PRIORITY[s] > KEY_COLOR_PRIORITY[best]:
+                best = s
+        st.session_state.keyboard_state[ch] = best
+
+# ---------------------------
 # Game state helpers
 # ---------------------------
 
@@ -156,6 +197,7 @@ def init_game(mode_label: str, play_type: str):
     st.session_state.message = ""
     st.session_state.definitions = [""] * n_boards
     st.session_state.guess_buffer = ""
+    init_keyboard_states(n_boards)
 
 
 def ensure_initialized():
@@ -165,6 +207,8 @@ def ensure_initialized():
         st.session_state.definitions = [""] * len(st.session_state.targets)
     if "guess_buffer" not in st.session_state:
         st.session_state.guess_buffer = ""
+    if "keyboard_state" not in st.session_state or "keyboard_board_state" not in st.session_state:
+        init_keyboard_states(len(st.session_state.targets))
 
 COLOR_MAP = {
     "correct": "#6aaa64",
@@ -203,6 +247,40 @@ def render_board(board_index: int):
                 render_cell(letter, status)
 
 # ---------------------------
+# Keyboard rendering
+# ---------------------------
+
+def render_keyboard():
+    st.markdown("### Keyboard")
+    n_boards = len(st.session_state.targets)
+
+    for row in KEYBOARD_ROWS:
+        cols = st.columns(len(row))
+        for i, ch in enumerate(row):
+            with cols[i]:
+                segments_html = ""
+                for b in range(n_boards):
+                    status = st.session_state.keyboard_board_state[ch][b]
+                    bg = KEYBOARD_COLORS[status]
+                    segments_html += (
+                        f"<div style='flex:1; height:100%; background:{bg}; "
+                        f"border-right:1px solid #111;'></div>"
+                    )
+                overall_border = KEYBOARD_COLORS[
+                    st.session_state.keyboard_state.get(ch, "unused")
+                ]
+                st.markdown(
+                    f"<div style='display:flex; flex-direction:column; align-items:center;'>"
+                    f"  <div style='font-weight:bold; color:white; margin-bottom:2px;'>{ch}</div>"
+                    f"  <div style='display:flex; width:2.4rem; height:0.6rem; "
+                    f"       border:2px solid {overall_border}; border-radius:4px; overflow:hidden;'>"
+                    f"    {segments_html}"
+                    f"  </div>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+
+# ---------------------------
 # Guess handling
 # ---------------------------
 
@@ -227,12 +305,15 @@ def apply_guess(guess: str):
         evals_i = st.session_state.evaluations[i]
 
         if i in st.session_state.solved:
-            # board already solved; keep row alignment
-            evals_i.append(["correct"] * WORD_LENGTH)
+            # board already solved; keep row alignment but don't change pattern
+            evals_i.append(["absent"] * WORD_LENGTH)
             continue
 
         eval_row = score_guess(target, guess)
         evals_i.append(eval_row)
+
+        # update keyboard from this board
+        update_keyboard_state_for_board(i, guess, eval_row)
 
         if all(x == "correct" for x in eval_row):
             st.session_state.solved.add(i)
@@ -370,6 +451,9 @@ def show_game():
                 definition = st.session_state.definitions[i]
                 label = "(solved)" if i in st.session_state.solved else "(unsolved)"
                 st.markdown(f"**Board {i+1} {label}: {word}** – {definition}")
+
+    # keyboard at the bottom
+    render_keyboard()
 
 # ---------------------------
 # Router
