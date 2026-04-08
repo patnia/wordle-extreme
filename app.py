@@ -3,13 +3,14 @@ from datetime import date
 from pathlib import Path
 import random
 import requests
+import concurrent.futures
 
 # ---------------------------
 # Word loading
 # ---------------------------
 
-SOLUTIONS_FILE = Path("solutions.txt")   # ~5k answer words
-ALLOWED_FILE = Path("words.txt")        # ~10k allowed guesses
+SOLUTIONS_FILE = Path("solutions.txt")
+ALLOWED_FILE = Path("words.txt")
 
 @st.cache_data
 def load_words():
@@ -22,12 +23,12 @@ def load_words():
     else:
         allowed = solutions
 
-    # ensure all solutions are guessable
     allowed_set = set(allowed)
     missing = [w for w in solutions if w not in allowed_set]
     allowed.extend(missing)
+    allowed_set.update(missing)
 
-    return solutions, allowed
+    return solutions, allowed_set   # return a set for O(1) lookup
 
 SOLUTIONS, ALLOWED = load_words()
 
@@ -35,11 +36,8 @@ SOLUTIONS, ALLOWED = load_words()
 # Dictionary lookup
 # ---------------------------
 
-def get_definition(word: str) -> str:
-    """
-    Fetch a short English definition using a free dictionary API.
-    Falls back gracefully if lookup fails.
-    """
+def _fetch_one(word: str) -> str:
+    """Fetch definition for a single word. Runs in a thread."""
     try:
         url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{word.lower()}"
         r = requests.get(url, timeout=5)
@@ -51,6 +49,15 @@ def get_definition(word: str) -> str:
     except Exception:
         return "No definition available."
 
+def fetch_definitions_parallel(words: list[str]) -> list[str]:
+    """
+    Fetch definitions for multiple words in parallel using a thread pool.
+    Replaces the sequential approach that blocked the UI for ~8 requests.
+    """
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(words)) as executor:
+        futures = [executor.submit(_fetch_one, w) for w in words]
+        return [f.result() for f in futures]
+
 # ---------------------------
 # Core scoring logic
 # ---------------------------
@@ -58,21 +65,20 @@ def get_definition(word: str) -> str:
 def score_guess(target: str, guess: str):
     """
     Wordle-style scoring.
-    Returns list of "correct" | "present" | "absent" per position.
+    Returns list of 'correct' | 'present' | 'absent' per position.
     """
     target = target.upper()
     guess = guess.upper()
     result = ["absent"] * len(guess)
-
     target_chars = list(target)
 
-    # first pass: exact matches
+    # First pass: exact matches
     for i, ch in enumerate(guess):
         if ch == target_chars[i]:
             result[i] = "correct"
             target_chars[i] = None
 
-    # second pass: present but misplaced
+    # Second pass: present but misplaced
     for i, ch in enumerate(guess):
         if result[i] == "correct":
             continue
@@ -93,7 +99,6 @@ MODE_CONFIG = {
 }
 
 def mode_key_title(mode_key: str) -> str:
-    # helper to go from "classic" to "Classic" etc.
     for label, cfg in MODE_CONFIG.items():
         if cfg["key"] == mode_key:
             return label
@@ -101,8 +106,6 @@ def mode_key_title(mode_key: str) -> str:
 
 def get_daily_targets(mode_key: str, today: date, solutions):
     boards = MODE_CONFIG[mode_key_title(mode_key)]["boards"]
-
-    # deterministic but simple: seed with mode+date and sample
     seed = hash((mode_key, today.toordinal()))
     rng = random.Random(seed)
     idxs = rng.sample(range(len(solutions)), boards)
@@ -110,20 +113,7 @@ def get_daily_targets(mode_key: str, today: date, solutions):
 
 def get_random_targets(mode_key: str, solutions):
     boards = MODE_CONFIG[mode_key_title(mode_key)]["boards"]
-    rng = random.Random()
-    return rng.sample(solutions, boards)
-
-# ---------------------------
-# Streamlit app
-# ---------------------------
-
-st.set_page_config(
-    page_title="Wordle Extreme",
-    page_icon="🧩",
-    layout="centered",
-)
-
-WORD_LENGTH = 5  # fixed 5-letter words
+    return random.sample(solutions, boards)
 
 # ---------------------------
 # Keyboard configuration
@@ -134,47 +124,33 @@ KEYBOARD_ROWS = ["QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"]
 KEY_COLOR_PRIORITY = {
     "correct": 3,
     "present": 2,
-    "absent": 1,
-    "unused": 0,
+    "absent":  1,
+    "unused":  0,
 }
 KEYBOARD_COLORS = {
-    "correct": "#6aaa64",  # green
-    "present": "#c9b458",  # yellow
-    "absent": "#3a3a3c",   # black-ish
-    "unused": "#818384",   # grey
+    "correct": "#6aaa64",
+    "present": "#c9b458",
+    "absent":  "#3a3a3c",
+    "unused":  "#818384",
 }
 
-def init_keyboard_states(n_boards: int):
-    st.session_state.keyboard_state = {
-        ch: "unused" for ch in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    }
-    st.session_state.keyboard_board_state = {
-        ch: ["unused"] * n_boards for ch in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    }
-
-def update_keyboard_state_for_board(board_idx: int, guess: str, eval_row):
-    for ch, status in zip(guess, eval_row):
-        board_list = st.session_state.keyboard_board_state[ch]
-        prev_board = board_list[board_idx]
-        if KEY_COLOR_PRIORITY[status] > KEY_COLOR_PRIORITY[prev_board]:
-            board_list[board_idx] = status
-
-        # overall key status = best across boards
-        best = "unused"
-        for s in board_list:
-            if KEY_COLOR_PRIORITY[s] > KEY_COLOR_PRIORITY[best]:
-                best = s
-        st.session_state.keyboard_state[ch] = best
+COLOR_MAP = {
+    "correct": "#6aaa64",
+    "present": "#c9b458",
+    "absent":  "#787c7e",
+    "empty":   "#121213",  # unfilled tile
+}
 
 # ---------------------------
-# Game state helpers
+# Game state initialisation
 # ---------------------------
-
-if "screen" not in st.session_state:
-    st.session_state.screen = "menu"  # "menu" or "game"
-
 
 def init_game(mode_label: str, play_type: str):
+    """
+    Single source of truth for all session state.
+    Called on new game; never patched piecemeal afterwards.
+    Replaces the fragile ensure_initialized() pattern.
+    """
     cfg = MODE_CONFIG[mode_label]
     mode_key = cfg["key"]
     n_boards = cfg["boards"]
@@ -184,74 +160,175 @@ def init_game(mode_label: str, play_type: str):
     else:
         targets = get_random_targets(mode_key, SOLUTIONS)
 
-    st.session_state.mode_label = mode_label
-    st.session_state.mode_key = mode_key
-    st.session_state.play_type = play_type
-    st.session_state.targets = targets                # list[str]
-    st.session_state.max_guesses = cfg["max_guesses"]
-    st.session_state.guesses = []                     # shared list of guesses
-    st.session_state.evaluations = {i: [] for i in range(n_boards)}
-    st.session_state.solved = set()
-    st.session_state.game_over = False
-    st.session_state.win = False
+    # Core game state
+    st.session_state.mode_label   = mode_label
+    st.session_state.mode_key     = mode_key
+    st.session_state.play_type    = play_type
+    st.session_state.targets      = targets
+    st.session_state.max_guesses  = cfg["max_guesses"]
+    st.session_state.guesses      = []          # list of actual guess strings
+    st.session_state.evaluations  = {i: [] for i in range(n_boards)}
+    st.session_state.solved       = set()
+    st.session_state.game_over    = False
+    st.session_state.win          = False
+    st.session_state.message      = ""
+    st.session_state.definitions  = [""] * n_boards
+
+    # FIX 1: separate display rows from guess rows.
+    # Solved boards stop receiving real evals but still show their own
+    # correct tiles for every remaining row — not fake gray tiles.
+    # display_rows[board_idx][row_idx] = list of (letter, status) tuples
+    st.session_state.display_rows = {i: [] for i in range(n_boards)}
+
+    # FIX 2: use a submit button instead of on_change to prevent
+    # double-submission and stale buffer issues.
+    st.session_state.pending_guess = ""
+
+    # Keyboard state
+    st.session_state.keyboard_state = {
+        ch: "unused" for ch in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    }
+    st.session_state.keyboard_board_state = {
+        ch: ["unused"] * n_boards for ch in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    }
+
+    st.session_state.screen = "game"
+
+# ---------------------------
+# Keyboard helpers
+# ---------------------------
+
+def update_keyboard(board_idx: int, guess: str, eval_row):
+    for ch, status in zip(guess, eval_row):
+        board_list = st.session_state.keyboard_board_state[ch]
+        if KEY_COLOR_PRIORITY[status] > KEY_COLOR_PRIORITY[board_list[board_idx]]:
+            board_list[board_idx] = status
+
+        best = max(board_list, key=lambda s: KEY_COLOR_PRIORITY[s])
+        st.session_state.keyboard_state[ch] = best
+
+# ---------------------------
+# Guess handling
+# ---------------------------
+
+def apply_guess(guess: str):
+    if st.session_state.game_over:
+        return
+
+    guess = guess.upper().strip()
+
+    if len(guess) != 5 or not guess.isalpha():
+        st.session_state.message = "Please enter a valid 5-letter word."
+        return
+
+    if guess not in ALLOWED:
+        st.session_state.message = "Not in word list."
+        return
+
     st.session_state.message = ""
-    st.session_state.definitions = [""] * n_boards
-    st.session_state.guess_buffer = ""
-    init_keyboard_states(n_boards)
+    st.session_state.guesses.append(guess)
+    n_boards = len(st.session_state.targets)
 
+    for i, target in enumerate(st.session_state.targets):
+        if i in st.session_state.solved:
+            # FIX 1: solved board — repeat its winning row visually
+            # so the board stays full and green, not filled with gray.
+            winning_row = st.session_state.display_rows[i][-1]  # last real row
+            st.session_state.display_rows[i].append(winning_row)
+            # evaluations entry still needed for row-count alignment
+            st.session_state.evaluations[i].append(["correct"] * 5)
+            continue
 
-def ensure_initialized():
-    if "mode_label" not in st.session_state or "targets" not in st.session_state:
-        init_game("Classic", "Daily")
-    if "definitions" not in st.session_state:
-        st.session_state.definitions = [""] * len(st.session_state.targets)
-    if "guess_buffer" not in st.session_state:
-        st.session_state.guess_buffer = ""
-    if "keyboard_state" not in st.session_state or "keyboard_board_state" not in st.session_state:
-        init_keyboard_states(len(st.session_state.targets))
+        eval_row = score_guess(target, guess)
+        st.session_state.evaluations[i].append(eval_row)
+        st.session_state.display_rows[i].append(
+            list(zip(guess, eval_row))
+        )
+        update_keyboard(i, guess, eval_row)
 
-COLOR_MAP = {
-    "correct": "#6aaa64",
-    "present": "#c9b458",
-    "absent": "#787c7e",
-}
+        if all(s == "correct" for s in eval_row):
+            st.session_state.solved.add(i)
 
-def render_cell(letter, status):
-    bg = COLOR_MAP[status]
+    # Game-over checks
+    if len(st.session_state.solved) == n_boards:
+        st.session_state.game_over = True
+        st.session_state.win = True
+        st.session_state.message = "🎉 You solved all boards!"
+    elif len(st.session_state.guesses) >= st.session_state.max_guesses:
+        st.session_state.game_over = True
+        st.session_state.win = False
+        unrevealed = [
+            st.session_state.targets[i]
+            for i in range(n_boards)
+            if i not in st.session_state.solved
+        ]
+        if unrevealed:
+            st.session_state.message = (
+                f"Out of guesses. Unsolved: {', '.join(unrevealed)}"
+            )
+        else:
+            st.session_state.message = "Out of guesses."
+
+    # FIX 3: fetch all definitions in parallel, not sequentially
+    if st.session_state.game_over:
+        st.session_state.definitions = fetch_definitions_parallel(
+            st.session_state.targets
+        )
+
+# ---------------------------
+# Rendering helpers
+# ---------------------------
+
+def render_cell(letter: str, status: str):
+    bg = COLOR_MAP.get(status, COLOR_MAP["empty"])
     st.markdown(
-        f"<div style='text-align:center; font-weight:bold; "
-        f"font-size:1.2rem; color:white; background:{bg}; "
-        f"border-radius:4px; padding:4px; margin:2px; width:3rem; height:3rem;"
-        f"display:flex; align-items:center; justify-content:center;'>"
-        f"{letter}</div>",
+        f"""
+        <div style='
+            text-align:center;
+            font-weight:bold;
+            font-size:1.2rem;
+            color:white;
+            background:{bg};
+            border: 2px solid {"#538d4e" if status == "correct"
+                               else "#b59f3b" if status == "present"
+                               else "#565758" if status == "absent"
+                               else "#3a3a3c"};
+            border-radius:4px;
+            width:3rem;
+            height:3rem;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            margin:2px auto;
+        '>{letter}</div>
+        """,
         unsafe_allow_html=True,
     )
 
 def render_board(board_index: int):
-    evals = st.session_state.evaluations[board_index]
+    """
+    Renders a board using display_rows, which correctly handles
+    solved boards (repeating green row) vs unsolved boards (empty rows).
+    """
+    display = st.session_state.display_rows[board_index]
     total_rows = st.session_state.max_guesses
 
     for row_idx in range(total_rows):
-        if row_idx < len(evals):
-            guess = st.session_state.guesses[row_idx]
-            statuses = evals[row_idx]
+        cols = st.columns(5)
+        if row_idx < len(display):
+            row = display[row_idx]   # list of (letter, status) tuples
+            for j, col in enumerate(cols):
+                with col:
+                    letter, status = row[j]
+                    render_cell(letter, status)
         else:
-            guess = " " * WORD_LENGTH
-            statuses = ["absent"] * WORD_LENGTH
-
-        cols = st.columns(WORD_LENGTH)
-        for j, col in enumerate(cols):
-            with col:
-                letter = guess[j] if j < len(guess) else " "
-                status = statuses[j]
-                render_cell(letter, status)
-
-# ---------------------------
-# Keyboard rendering
-# ---------------------------
+            # Empty future row
+            for col in cols:
+                with col:
+                    render_cell(" ", "empty")
 
 def render_keyboard():
-    st.markdown("### Keyboard")
+    st.markdown("---")
     n_boards = len(st.session_state.targets)
 
     for row in KEYBOARD_ROWS:
@@ -263,91 +340,23 @@ def render_keyboard():
                     status = st.session_state.keyboard_board_state[ch][b]
                     bg = KEYBOARD_COLORS[status]
                     segments_html += (
-                        f"<div style='flex:1; height:100%; background:{bg}; "
+                        f"<div style='flex:1;height:100%;background:{bg};"
                         f"border-right:1px solid #111;'></div>"
                     )
-                overall_border = KEYBOARD_COLORS[
+                overall = KEYBOARD_COLORS[
                     st.session_state.keyboard_state.get(ch, "unused")
                 ]
                 st.markdown(
-                    f"<div style='display:flex; flex-direction:column; align-items:center;'>"
-                    f"  <div style='font-weight:bold; color:#111; font-size: 0.9rem; margin-bottom:2px;'>{ch}</div>"
-                    f"  <div style='display:flex; width:2.4rem; height:0.6rem; "
-                    f"       border:2px solid {overall_border}; border-radius:4px; overflow:hidden;'>"
-                    f"    {segments_html}"
-                    f"  </div>"
+                    f"<div style='display:flex;flex-direction:column;"
+                    f"align-items:center;'>"
+                    f"<div style='font-weight:bold;color:#ccc;"
+                    f"font-size:0.9rem;margin-bottom:2px;'>{ch}</div>"
+                    f"<div style='display:flex;width:2.4rem;height:0.6rem;"
+                    f"border:2px solid {overall};border-radius:4px;"
+                    f"overflow:hidden;'>{segments_html}</div>"
                     f"</div>",
                     unsafe_allow_html=True,
                 )
-
-# ---------------------------
-# Guess handling
-# ---------------------------
-
-def apply_guess(guess: str):
-    if st.session_state.game_over:
-        return
-
-    guess = guess.upper()
-
-    if len(guess) != WORD_LENGTH or not guess.isalpha():
-        st.session_state.message = "Please enter a valid 5-letter word."
-        return
-
-    if guess not in ALLOWED:
-        st.session_state.message = "Not in word list."
-        return
-
-    st.session_state.guesses.append(guess)
-
-    # evaluate across all boards
-    for i, target in enumerate(st.session_state.targets):
-        evals_i = st.session_state.evaluations[i]
-
-        if i in st.session_state.solved:
-            # board already solved; keep row alignment but don't change pattern
-            evals_i.append(["absent"] * WORD_LENGTH)
-            continue
-
-        eval_row = score_guess(target, guess)
-        evals_i.append(eval_row)
-
-        # update keyboard from this board
-        update_keyboard_state_for_board(i, guess, eval_row)
-
-        if all(x == "correct" for x in eval_row):
-            st.session_state.solved.add(i)
-
-    # game over logic
-    if len(st.session_state.solved) == len(st.session_state.targets):
-        st.session_state.game_over = True
-        st.session_state.win = True
-        st.session_state.message = "You solved all boards! 🎉"
-    elif len(st.session_state.guesses) >= st.session_state.max_guesses:
-        st.session_state.game_over = True
-        st.session_state.win = False
-        # only show answers for unsolved boards
-        unrevealed = [
-            st.session_state.targets[i]
-            for i in range(len(st.session_state.targets))
-            if i not in st.session_state.solved
-        ]
-        if unrevealed:
-            answers = ", ".join(unrevealed)
-            st.session_state.message = f"Out of guesses. Unsolved answers: {answers}"
-        else:
-            st.session_state.message = "Out of guesses."
-
-    if st.session_state.game_over:
-        # definitions for all boards
-        for i, word in enumerate(st.session_state.targets):
-            st.session_state.definitions[i] = get_definition(word)
-
-def handle_guess_change():
-    guess = st.session_state.get("guess_buffer", "")
-    if guess:
-        apply_guess(guess)
-        st.session_state["guess_buffer"] = ""  # clear after submit
 
 # ---------------------------
 # Screens
@@ -358,106 +367,131 @@ def show_menu():
     st.markdown("Choose a game mode to begin.")
 
     mode_label = st.radio("Mode", list(MODE_CONFIG.keys()), index=0)
-    play_type = st.radio("Play type", ["Daily", "Practice"], index=0)
+    play_type  = st.radio("Play type", ["Daily", "Practice"], index=0)
 
-    if st.button("Start game"):
+    if st.button("Start game", type="primary"):
         init_game(mode_label, play_type)
-        st.session_state.screen = "game"
         st.rerun()
 
 def show_game():
-    ensure_initialized()
+    # Guard: if somehow we land here without state, go back to menu
+    if "targets" not in st.session_state:
+        st.session_state.screen = "menu"
+        st.rerun()
+        return
 
     st.title("Wordle Extreme")
     st.caption(
-        f"{st.session_state.mode_label} · {st.session_state.play_type} · {date.today().isoformat()}"
+        f"{st.session_state.mode_label} · "
+        f"{st.session_state.play_type} · "
+        f"{date.today().isoformat()}"
     )
 
-    if st.button("Back to menu"):
-        st.session_state.screen = "menu"
-        st.rerun()
+    col_back, col_new = st.columns([1, 1])
+    with col_back:
+        if st.button("← Menu"):
+            st.session_state.screen = "menu"
+            st.rerun()
+    with col_new:
+        if st.button("New game (Practice)"):
+            init_game(st.session_state.mode_label, "Practice")
+            st.rerun()
 
     n_boards = len(st.session_state.targets)
 
+    # ---------------------------
+    # FIX 4: Board layout — use equal columns, no spacer hack.
+    # Classic: 1 centred column. Quad: 2 cols. Octo: 2 cols (4 rows).
+    # ---------------------------
+
     if n_boards == 1:
-        st.subheader("Classic")
-        with st.container():
+        _, center, _ = st.columns([1, 2, 1])
+        with center:
             render_board(0)
 
     elif n_boards == 4:
-        st.subheader("Quad")
-        rows = [st.columns([1, 0.1, 1]), st.columns([1, 0.1, 1])]  # spacer column
-        idx = 0
-        for row in rows:
-            left, spacer, right = row
-            for col in (left, right):
-                if idx >= n_boards:
-                    break
-                with col:
-                    st.markdown(
-                        "<div style='border: 2px solid #444; border-radius: 8px; "
-                        "padding: 8px; margin: 8px;'>",
-                        unsafe_allow_html=True,
-                    )
-                    st.markdown(f"**Board {idx+1}**")
-                    render_board(idx)
-                    st.markdown("</div>", unsafe_allow_html=True)
-                idx += 1
+        for row_start in range(0, 4, 2):   # rows: (0,1), (2,3)
+            c1, c2 = st.columns(2)
+            for col_widget, board_idx in zip([c1, c2], [row_start, row_start + 1]):
+                with col_widget:
+                    solved_tag = " ✅" if board_idx in st.session_state.solved else ""
+                    st.markdown(f"**Board {board_idx + 1}{solved_tag}**")
+                    render_board(board_idx)
 
     elif n_boards == 8:
-        st.subheader("Octo")
-        # 4 rows, 2 boards per row
-        rows = [st.columns(2) for _ in range(4)]
-        idx = 0
-        for row in rows:
-            for col in row:
-                if idx >= n_boards:
-                    break
-                with col:
-                    st.markdown(
-                        "<div style='border: 2px solid #444; border-radius: 8px; "
-                        "padding: 8px; margin: 8px;'>",
-                        unsafe_allow_html=True,
-                    )
-                    st.markdown(f"**Board {idx+1}**")
-                    render_board(idx)
-                    st.markdown("</div>", unsafe_allow_html=True)
-                idx += 1
+        for row_start in range(0, 8, 2):
+            c1, c2 = st.columns(2)
+            for col_widget, board_idx in zip([c1, c2], [row_start, row_start + 1]):
+                with col_widget:
+                    solved_tag = " ✅" if board_idx in st.session_state.solved else ""
+                    st.markdown(f"**Board {board_idx + 1}{solved_tag}**")
+                    render_board(board_idx)
+
+    # ---------------------------
+    # Guess input
+    # FIX 2: use a form with a submit button instead of on_change.
+    # This prevents double-submission and stale buffer issues entirely.
+    # ---------------------------
 
     remaining = st.session_state.max_guesses - len(st.session_state.guesses)
-    st.markdown(f"**Guesses left:** {remaining}")
+    st.markdown(f"**Guesses remaining:** {remaining}")
 
-    st.text_input(
-        "Enter a 5-letter guess",
-        max_chars=WORD_LENGTH,
-        key="guess_buffer",
-        on_change=handle_guess_change,
-    )
+    if not st.session_state.game_over:
+        with st.form(key="guess_form", clear_on_submit=True):
+            guess_input = st.text_input(
+                "Enter a 5-letter word",
+                max_chars=5,
+                key="guess_input_field",
+                label_visibility="collapsed",
+                placeholder="Type your guess…",
+            )
+            submitted = st.form_submit_button("Guess", type="primary")
 
+        if submitted and guess_input:
+            apply_guess(guess_input)
+            st.rerun()
+
+    # Status message
     if st.session_state.message:
-        st.markdown(st.session_state.message)
+        if st.session_state.win:
+            st.success(st.session_state.message)
+        elif st.session_state.game_over:
+            st.error(st.session_state.message)
+        else:
+            st.warning(st.session_state.message)
 
+    # Post-game word definitions
     if st.session_state.game_over:
-        n_boards = len(st.session_state.targets)
+        st.markdown("---")
         if n_boards == 1:
-            st.markdown("### Today’s word")
+            st.markdown("### Today's word")
+            status = "✅ Solved" if 0 in st.session_state.solved else "❌ Unsolved"
             st.markdown(
-                f"**{st.session_state.targets[0].title()}** – {st.session_state.definitions[0]}"
+                f"**{st.session_state.targets[0].title()}** {status}  \n"
+                f"*{st.session_state.definitions[0]}*"
             )
         else:
-            st.markdown("### Today’s words")
+            st.markdown("### Today's words")
             for i in range(n_boards):
-                word = st.session_state.targets[i].title()
-                definition = st.session_state.definitions[i]
-                label = "(solved)" if i in st.session_state.solved else "(unsolved)"
-                st.markdown(f"**Board {i+1} {label}: {word}** – {definition}")
+                word   = st.session_state.targets[i].title()
+                defn   = st.session_state.definitions[i]
+                status = "✅ Solved" if i in st.session_state.solved else "❌ Unsolved"
+                st.markdown(f"**Board {i+1} — {word}** {status}  \n*{defn}*")
 
-    # keyboard at the bottom
     render_keyboard()
 
 # ---------------------------
 # Router
 # ---------------------------
+
+st.set_page_config(
+    page_title="Wordle Extreme",
+    page_icon="🧩",
+    layout="centered",
+)
+
+if "screen" not in st.session_state:
+    st.session_state.screen = "menu"
 
 if st.session_state.screen == "menu":
     show_menu()
